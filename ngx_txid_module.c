@@ -2,7 +2,7 @@
 #include <ngx_http.h>
 #include <ngx_http_variables.h>
 
-void   ngx_txid_base32_encode(unsigned char *dst, unsigned char *src, size_t n);
+void  ngx_txid_base32_encode(unsigned char *dst, unsigned char *src, size_t n);
 size_t ngx_txid_base32_encode_len(size_t n);
 
 static int          txid_dev_urandom = 0;
@@ -80,7 +80,8 @@ ngx_txid_make(unsigned char *out, const size_t len) {
 }
 
 static ngx_int_t
-ngx_txid_get(ngx_http_request_t *r, ngx_http_variable_value_t *v, uintptr_t data) {
+ngx_txid_get(ngx_http_request_t *r, ngx_http_variable_value_t *v, \
+         uintptr_t data) {
     const size_t bits = 96;
     const size_t len  = (bits+7)/8;
 
@@ -116,31 +117,75 @@ ngx_txid_get(ngx_http_request_t *r, ngx_http_variable_value_t *v, uintptr_t data
 }
 
 static ngx_int_t
-ngx_txrnd_get(ngx_http_request_t *r, ngx_http_variable_value_t *v, uintptr_t data) {
+ngx_txad_get(ngx_http_request_t *r, ngx_http_variable_value_t *v, \
+        uintptr_t data) {
 
-    const u_char rbuf[4]; /* an unsigned 32 bit rand space */
-    const int len = 4;   /* its 4 */
-    const int umaxlen = 11;	    /* 2^32-1 as a decimal, 10 chars, plus \0 */
+  in_addr_t           src_addr;
+  ngx_addr_t          addr;
+  struct sockaddr_in *sin;
+  
+  int umaxlen = 9; // 8 chars + null
+  
 
-    ngx_txid_get_entropy((unsigned char *)&rbuf, len);
+  addr.sockaddr = r->connection->sockaddr;
+  addr.socklen = r->connection->socklen;
 
-    u_char *out = ngx_pnalloc(r->pool, umaxlen);
-    if (out == NULL) {
-        v->valid = 0;
-        v->not_found = 1;
-        return NGX_ERROR;
-    }
+  u_char *out = ngx_pnalloc(r->pool, umaxlen);
+  if (out == NULL) {
+      v->valid = 0;
+      v->not_found = 1;
+      return NGX_ERROR;
+  }
 
-    snprintf((char *)out, umaxlen, "%02x%02x%02x%02x", rbuf[0], rbuf[1], rbuf[2], rbuf[3]);
+  switch (addr.sockaddr->sa_family) {
+    case AF_INET6:
+      snprintf((char *)out, umaxlen, "00000000");
+      break;
+    case AF_INET:
+      sin = (struct sockaddr_in *) addr.sockaddr;
+      src_addr = ntohl(sin->sin_addr.s_addr);
+      snprintf((char *)out, umaxlen, "%08x", src_addr);
+      break;
+  }
 
-    v->len = umaxlen -1;
-    v->data = out;
+  v->len = umaxlen -1;
+  v->data = out;
 
-    v->valid = 1;
-    v->not_found = 0;
-    v->no_cacheable = 0;
+  v->valid = 1;
+  v->not_found = 0;
+  v->no_cacheable = 0;
 
-    return NGX_OK;
+  return NGX_OK;
+}
+
+static ngx_int_t
+ngx_txrnd_get(ngx_http_request_t *r, ngx_http_variable_value_t *v, \
+            uintptr_t data) {
+
+  const u_char rbuf[4]; /* an unsigned 32 bit rand space */
+  const int len = 4;   /* its 4 */
+  const int umaxlen = 9;	    /* 2^32-1 as a decimal, 10 chars, plus \0 */
+
+  ngx_txid_get_entropy((unsigned char *)&rbuf, len);
+
+  u_char *out = ngx_pnalloc(r->pool, umaxlen);
+  if (out == NULL) {
+      v->valid = 0;
+      v->not_found = 1;
+      return NGX_ERROR;
+  }
+
+  snprintf((char *)out, umaxlen, "%02x%02x%02x%02x", \
+            rbuf[0], rbuf[1], rbuf[2], rbuf[3]);
+
+  v->len = umaxlen -1;
+  v->data = out;
+
+  v->valid = 1;
+  v->not_found = 0;
+  v->no_cacheable = 0;
+
+  return NGX_OK;
 }
 
 static ngx_int_t
@@ -153,7 +198,7 @@ ngx_txid_init_process(ngx_cycle_t *cycle) {
     }
 
     ngx_log_error(NGX_LOG_DEBUG, cycle->log, 0,
-                  "opened /dev/urandom %d for pid %d", txid_dev_urandom, ngx_pid);
+              "opened /dev/urandom %d for pid %d", txid_dev_urandom, ngx_pid);
 
     return NGX_OK;
 }
@@ -167,6 +212,7 @@ ngx_txid_exit_process(ngx_cycle_t *cycle) {
 
 static ngx_str_t ngx_txid_variable_name = ngx_string("txid");
 static ngx_str_t ngx_txrnd_variable_name = ngx_string("txrnd");
+static ngx_str_t ngx_txad_variable_name = ngx_string("txad");
 
 static ngx_int_t ngx_txid_add_variables(ngx_conf_t *cf)
 {
@@ -191,6 +237,17 @@ static ngx_int_t ngx_txid_add_variables(ngx_conf_t *cf)
   }
 
   varnd->get_handler = ngx_txrnd_get;
+
+  ngx_http_variable_t* varad = ngx_http_add_variable(
+          cf,
+          &ngx_txad_variable_name,
+          NGX_HTTP_VAR_NOHASH);
+
+  if (varad == NULL) {
+      return NGX_ERROR;
+  }
+
+  varad->get_handler = ngx_txad_get;
 
   return NGX_OK;
 }
